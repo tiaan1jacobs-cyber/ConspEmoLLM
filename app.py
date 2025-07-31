@@ -1,83 +1,82 @@
-from flask import Flask, request, jsonify
+import gradio as gr
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
-import os
+import json
 
-app = Flask(__name__)
-
-# Load model (using the exact method from README)
+# Load the ConspEmoLLM model
 MODEL_PATH = "lzw1008/ConspEmoLLM-v2"
 print("Loading ConspEmoLLM...")
 
 try:
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_PATH, 
-        device_map='auto',
-        torch_dtype=torch.float16,  # Use half precision to save memory
-        low_cpu_mem_usage=True
-    )
+    model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, device_map='auto')
     print("Model loaded successfully!")
+    model_loaded = True
 except Exception as e:
-    print(f"Error loading model: {e}")
+    print(f"Error: {e}")
     tokenizer = None
     model = None
+    model_loaded = False
 
-@app.route('/analyze', methods=['POST'])
-def analyze_text():
-    if model is None or tokenizer is None:
-        return jsonify({'error': 'Model not loaded'}), 500
-        
+def analyze_text(text):
+    """Analyze text with ConspEmoLLM"""
+    if not model_loaded:
+        return {"error": "Model not loaded", "status": "error"}
+    
+    if not text.strip():
+        return {"error": "No text provided", "status": "error"}
+    
     try:
-        data = request.json
-        text = data.get('text', '')
-        
-        if not text:
-            return jsonify({'error': 'No text provided'}), 400
-        
-        # Tokenize input
         inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
         
-        # Generate response
         with torch.no_grad():
-            generate_ids = model.generate(
+            outputs = model.generate(
                 inputs["input_ids"], 
-                max_new_tokens=100,  # Changed from max_length to max_new_tokens
+                max_new_tokens=100,
                 temperature=0.7,
                 do_sample=True,
-                pad_token_id=tokenizer.eos_token_id,
-                eos_token_id=tokenizer.eos_token_id
+                pad_token_id=tokenizer.eos_token_id
             )
         
-        # Decode response
-        response = tokenizer.batch_decode(generate_ids, skip_special_tokens=True)[0]
+        result = tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
         
-        return jsonify({
-            'result': response,
-            'original_text': text,
-            'status': 'success'
-        })
+        return {
+            "result": result,
+            "original_text": text,
+            "status": "success"
+        }
         
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return {"error": str(e), "status": "error"}
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({
-        'status': 'healthy',
-        'model_loaded': model is not None
-    })
+def api_interface(text):
+    """Main interface for API calls"""
+    if text.strip().lower() == "/health":
+        return json.dumps({"status": "healthy", "model_loaded": model_loaded}, indent=2)
+    
+    result = analyze_text(text)
+    return json.dumps(result, indent=2)
 
-@app.route('/', methods=['GET'])
-def home():
-    return jsonify({
-        'message': 'ConspEmoLLM API is running',
-        'endpoints': {
-            'analyze': 'POST /analyze',
-            'health': 'GET /health'
-        }
-    })
+# Create simple Gradio interface
+demo = gr.Interface(
+    fn=api_interface,
+    inputs=gr.Textbox(
+        lines=5, 
+        placeholder="Enter text to analyze...\nOr type '/health' to check status",
+        label="Input Text"
+    ),
+    outputs=gr.Textbox(
+        lines=10,
+        label="Analysis Result (JSON)"
+    ),
+    title="ConspEmoLLM API",
+    description="Analyze text for conspiracy theories and emotions",
+    examples=[
+        ["/health"],
+        ["I think the government is hiding vaccine information and this makes me worried."],
+        ["The media manipulates climate data to control us and I feel angry about it."]
+    ]
+)
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+if __name__ == "__main__":
+    demo.launch()
